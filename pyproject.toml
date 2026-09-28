@@ -74,6 +74,7 @@ extend-exclude = [
     "vllm_gguf_plugin/csrc/gguf/vecdotq.cuh",
     "vllm_gguf_plugin/csrc/gguf/mmq.cuh",
     "vllm_gguf_plugin/csrc/gguf/mmvq.cuh",
+    "vllm_gguf_plugin/csrc/gguf/llamacpp/*",
 ]
 ignore-hidden = false
 
