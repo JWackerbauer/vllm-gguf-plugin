@@ -3,12 +3,15 @@
 import gc
 import weakref
 
+import gguf
+import pytest
 import torch
 import vllm.engine.arg_utils as arg_utils_module
 import vllm.model_executor.layers.linear as linear_module
 import vllm.model_executor.layers.vocab_parallel_embedding as vocab_embedding_module
 import vllm.model_executor.parameter as parameter_module
 import vllm.transformers_utils.config as config_module
+from gguf import GGMLQuantizationType as WeightType
 from transformers import PretrainedConfig
 from vllm.config.load import LoadConfig
 from vllm.engine.arg_utils import EngineArgs
@@ -430,3 +433,49 @@ def test_gguf_merged_column_releases_shards_after_concat(monkeypatch):
     assert layer.weight is not source_param
     assert not source_param.data_container
     assert all(ref() is None for ref in shard_refs)
+
+
+@pytest.mark.parametrize(
+    "quant_type, num_tokens, expected",
+    [
+        (WeightType.Q4_K, 1, "mmvq"),
+        (WeightType.Q4_K, 32, "mmq"),
+        # above the MMQ batch limit K-quants go through dequantize + GEMM
+        (WeightType.Q4_K, 33, "dequant"),
+        (WeightType.Q6_K, 2048, "dequant"),
+        (WeightType.Q8_0, 2048, "dequant"),
+        # i-quants have no MMQ kernel and already used dequantize + GEMM
+        (WeightType.IQ3_S, 33, "dequant"),
+    ],
+)
+def test_fused_mul_mat_dispatch_by_batch_size(
+    monkeypatch, quant_type, num_tokens, expected
+):
+    import vllm_gguf_plugin.quantization.linear as gguf_linear
+
+    rows = 64
+    block_size, type_size = gguf.GGML_QUANT_SIZES[quant_type]
+    cols = 2 * block_size
+    weight = torch.zeros(rows, 2 * type_size, dtype=torch.uint8)
+    x = torch.zeros(num_tokens, cols)
+    calls = []
+
+    def fake_matmul(name):
+        def fn(w, x, qtype, nrows):
+            calls.append(name)
+            return torch.zeros(x.shape[0], nrows)
+
+        return fn
+
+    def fake_dequantize(w, qtype, m, n, dtype):
+        calls.append("dequant")
+        return torch.zeros(m, n, dtype=dtype)
+
+    monkeypatch.setattr(gguf_linear.ops, "ggml_mul_mat_vec_a8", fake_matmul("mmvq"))
+    monkeypatch.setattr(gguf_linear.ops, "ggml_mul_mat_a8", fake_matmul("mmq"))
+    monkeypatch.setattr(gguf_linear.ops, "ggml_dequantize", fake_dequantize)
+
+    out = gguf_linear._fused_mul_mat_gguf(x, weight, int(quant_type))
+
+    assert calls == [expected]
+    assert out.shape == (num_tokens, rows)
