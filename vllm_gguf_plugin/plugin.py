@@ -86,8 +86,23 @@ def _patch_engine_args() -> None:
         if self.speculative_config is not None:
             configured_model = configured_model or self.speculative_config.get("model")
 
-        config = original_create_speculative_config(self, *args, **kwargs)
         gguf_model = self.model_weights
+        if (
+            self.speculative_config is not None
+            and self.speculative_config.get("method") == "mtp"
+            and configured_model is None
+            and check_gguf_file(gguf_model)
+        ):
+            # A local .gguf path is not a valid draft `model`: ModelConfig would
+            # look it up as a Hub repo (image processor config). Point the draft
+            # at the same HF config source as the target; weights are set below.
+            self.speculative_config = {
+                "quantization": self.quantization,
+                **self.speculative_config,
+                "model": self.model,
+            }
+
+        config = original_create_speculative_config(self, *args, **kwargs)
         if (
             config is not None
             and config.method == "mtp"
