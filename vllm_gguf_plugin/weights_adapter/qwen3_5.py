@@ -37,9 +37,9 @@ QWEN35_MTP_MODEL_TYPES = ("qwen3_5_mtp", "qwen3_5_moe_mtp")
 QWEN35_MOE_MTP_MODEL_TYPES = ("qwen3_5_moe_mtp",)
 QWEN35_ARCHITECTURES = {
     "qwen3_5": "Qwen3_5ForConditionalGeneration",
-    "qwen3_5_text": "Qwen3_5ForConditionalGeneration",
+    "qwen3_5_text": "Qwen3_5ForCausalLM",
     "qwen3_5_moe": "Qwen3_5MoeForConditionalGeneration",
-    "qwen3_5_moe_text": "Qwen3_5MoeForConditionalGeneration",
+    "qwen3_5_moe_text": "Qwen3_5MoeForCausalLM",
 }
 
 QWEN35_ATTN_SUBSTR: dict[str, str] = {
@@ -199,7 +199,6 @@ class Qwen35GGUFAdapter(BaseGGUFWeightsAdapter):
         hf_config: PretrainedConfig,
     ) -> PretrainedConfig:
         model_type = hf_config.model_type
-        architecture = QWEN35_ARCHITECTURES[model_type]
         patched = maybe_patch_hf_config_from_gguf(
             files.primary_backbone,
             hf_config,
@@ -222,7 +221,9 @@ class Qwen35GGUFAdapter(BaseGGUFWeightsAdapter):
             )
             patched = config_cls(text_config=patched.to_dict())
 
-        patched.architectures = [architecture]
+        # Text-only configs (no mm_proj) load as *ForCausalLM; wrapped configs
+        # report the multimodal model_type and map to *ForConditionalGeneration.
+        patched.architectures = [QWEN35_ARCHITECTURES[patched.model_type]]
         return patched
 
     def build_name_map(
