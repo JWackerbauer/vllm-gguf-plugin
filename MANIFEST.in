@@ -2,6 +2,7 @@ include LICENSE
 include README.md
 
 recursive-include vllm_gguf_plugin/csrc *.h *.cpp *.cu *.cuh
+recursive-include vllm_gguf_plugin/csrc/gguf/llamacpp LICENSE README.md
 
 global-exclude __pycache__
 global-exclude *.py[cod]

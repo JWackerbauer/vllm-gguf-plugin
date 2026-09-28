@@ -16,6 +16,7 @@
 #include "mmq.cuh"
 #include "moe.cuh"
 #include "moe_vec.cuh"
+#include "mmvq_llamacpp.h"
 
 using torch::headeronly::ScalarType;
 using torch::stable::Tensor;
@@ -113,9 +114,19 @@ Tensor ggml_mul_mat_vec_a8(Tensor W,  // quant weight
   cudaStream_t stream = get_current_cuda_stream(device_idx);
   Tensor quant_X =
       torch::stable::new_empty(W, {vecs, padded / 32 * 9}, ScalarType::Int);
+  const int dst_dtype =
+      X.scalar_type() == ScalarType::Float  ? MMVQ_LLAMACPP_DST_F32
+      : X.scalar_type() == ScalarType::Half ? MMVQ_LLAMACPP_DST_F16
+                                            : MMVQ_LLAMACPP_DST_BF16;
   VLLM_DISPATCH_FLOATING_TYPES(X.scalar_type(), "ggml_mul_mat_vec_a8", [&] {
     quantize_row_q8_1_cuda<scalar_t>(
         (scalar_t*)X.data_ptr(), (void*)quant_X.data_ptr(), col, vecs, stream);
+    // Prefer the kernels ported from current llama.cpp; the b2899 kernels
+    // below remain as a fallback for types the port does not cover.
+    if (mmvq_llamacpp(type, W.data_ptr(), quant_X.data_ptr(), Y.data_ptr(),
+                      dst_dtype, col, row, vecs, padded / QK8_1, stream)) {
+      return;
+    }
     switch (type) {
       case 2:
         mul_mat_vec_q4_0_q8_1_cuda<scalar_t>(

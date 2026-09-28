@@ -35,10 +35,13 @@ from .utils import (
 def _fused_mul_mat_gguf(
     x: torch.Tensor, weight: torch.Tensor, weight_type: int
 ) -> torch.Tensor:
+    # MMVQ computes up to 8 vectors per pass over the weights (see
+    # mmvq_llamacpp.cu), so small batches such as speculative-decoding
+    # verification stay on it rather than the dp4a MMQ path.
     if weight_type in IMATRIX_QUANT_TYPES:
         mmvq_safe = 8 if weight.shape[0] > 5120 else 16
     else:
-        mmvq_safe = 2 if weight.shape[0] > 5120 else 6
+        mmvq_safe = 8
     if x.shape[0] == 0:
         return torch.empty(x.shape[0], weight.shape[0], dtype=x.dtype, device=x.device)
     if weight_type in UNQUANTIZED_TYPES:
