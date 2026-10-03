@@ -27,11 +27,17 @@ from .params import (
 )
 from .utils import (
     DEQUANT_TYPES,
-    IMATRIX_QUANT_TYPES,
     MMQ_QUANT_TYPES,
     MMVQ_QUANT_TYPES,
     UNQUANTIZED_TYPES,
 )
+
+# MMVQ (mmvq_llamacpp.cu) computes up to 8 vectors per pass over the weights
+# and stays well ahead of dequantize + GEMM for small batches such as
+# speculative-decoding verification (num_seqs * (1 + num_speculative_tokens)):
+# summed over a 27B IQ3_S model it costs 57 ms at 16 rows vs 258 ms for
+# dequantize + GEMM, crossing over around 70 rows on an RTX 4070 Ti.
+_MMVQ_MAX_BATCH = int(os.environ.get("VLLM_GGUF_MMVQ_MAX_BATCH", "32"))
 
 # The MMQ kernels are dp4a-based (no tensor cores) and fall far behind
 # dequantize + cuBLAS once the batch is large, i.e. during prefill.
@@ -41,18 +47,11 @@ _MMQ_MAX_BATCH = int(os.environ.get("VLLM_GGUF_MMQ_MAX_BATCH", "32"))
 def _fused_mul_mat_gguf(
     x: torch.Tensor, weight: torch.Tensor, weight_type: int
 ) -> torch.Tensor:
-    # MMVQ computes up to 8 vectors per pass over the weights (see
-    # mmvq_llamacpp.cu), so small batches such as speculative-decoding
-    # verification stay on it rather than the dp4a MMQ path.
-    if weight_type in IMATRIX_QUANT_TYPES:
-        mmvq_safe = 8 if weight.shape[0] > 5120 else 16
-    else:
-        mmvq_safe = 8
     if x.shape[0] == 0:
         return torch.empty(x.shape[0], weight.shape[0], dtype=x.dtype, device=x.device)
     if weight_type in UNQUANTIZED_TYPES:
         return x @ weight.T
-    if x.shape[0] <= mmvq_safe and weight_type in MMVQ_QUANT_TYPES:
+    if x.shape[0] <= _MMVQ_MAX_BATCH and weight_type in MMVQ_QUANT_TYPES:
         y = ops.ggml_mul_mat_vec_a8(weight, x, weight_type, weight.shape[0])
     elif weight_type in MMQ_QUANT_TYPES and x.shape[0] <= _MMQ_MAX_BATCH:
         y = ops.ggml_mul_mat_a8(weight, x, weight_type, weight.shape[0])
