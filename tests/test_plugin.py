@@ -453,6 +453,8 @@ def test_fused_mul_mat_dispatch_by_batch_size(
 ):
     import vllm_gguf_plugin.quantization.linear as gguf_linear
 
+    # pin the MMVQ limit so this only exercises the MMQ/dequantize boundary
+    monkeypatch.setattr(gguf_linear, "_MMVQ_MAX_BATCH", 8, raising=False)
     rows = 64
     block_size, type_size = gguf.GGML_QUANT_SIZES[quant_type]
     cols = 2 * block_size
