@@ -1,5 +1,9 @@
 import pytest
-from vllm.transformers_utils.configs.qwen3_5 import Qwen3_5Config, Qwen3_5TextConfig
+
+try:
+    from vllm.transformers_utils.configs.qwen3_5 import Qwen3_5Config, Qwen3_5TextConfig
+except ImportError:  # vLLM >= 0.32
+    from transformers import Qwen3_5Config, Qwen3_5TextConfig
 
 from vllm_gguf_plugin.weights_adapter import (
     GGUFModelFiles,
