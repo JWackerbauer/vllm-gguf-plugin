@@ -43,6 +43,17 @@ _MMVQ_MAX_BATCH = int(os.environ.get("VLLM_GGUF_MMVQ_MAX_BATCH", "32"))
 # dequantize + cuBLAS once the batch is large, i.e. during prefill.
 _MMQ_MAX_BATCH = int(os.environ.get("VLLM_GGUF_MMQ_MAX_BATCH", "32"))
 
+# Unquantized (F32/F16/BF16) weights up to this many elements are stored transposed,
+# [in, out] row-major. For a [2..8 rows] x [5120 -> 96] product (the in_proj_ba gate
+# projection of Qwen3.5 GatedDeltaNet layers at MTP verify sizes), cuBLAS picks a
+# 16x16 wmma kernel with 8 thread blocks for the usual [out, in] layout: 25-36 us on an
+# RTX 5090, ~7% of single-stream decode summed over 48 layers. With the transposed
+# layout it picks a fast kernel at every row count (~5 us). Large unquantized
+# weights (F16/BF16 GGUF models) keep their layout, which cuBLAS handles well.
+_TRANSPOSE_MAX_NUMEL = int(
+    os.environ.get("VLLM_GGUF_TRANSPOSE_MAX_NUMEL", str(4 * 2**20))
+)
+
 
 def _fused_mul_mat_gguf(
     x: torch.Tensor, weight: torch.Tensor, weight_type: int
@@ -168,6 +179,26 @@ class GGUFLinearMethod(LinearMethodBase):
                 f"Unsupported GGUF quantization type {weight_type} in layer {layer}."
             )
         self._create_padded_weight_param(layer)
+        self._transpose_small_unquantized_weight(layer)
+
+    def _transpose_small_unquantized_weight(self, layer: torch.nn.Module) -> None:
+        """Keep small unquantized weights as [in, out]; see _TRANSPOSE_MAX_NUMEL."""
+        weight = layer.weight
+        weight_types = {
+            layer.weight_type.weight_type,
+            *layer.weight_type.shard_weight_type.values(),
+        }
+        if (
+            not weight_types <= UNQUANTIZED_TYPES
+            or len(weight_types) != 1
+            or weight.dim() != 2
+            or weight.numel() == 0
+            or weight.numel() > _TRANSPOSE_MAX_NUMEL
+        ):
+            return
+        layer.register_buffer("weight_t", weight.data.T.contiguous(), persistent=False)
+        # layer.weight stays a valid [out, in] view of the same memory
+        weight.data = layer.weight_t.T
 
     def _materialize_gguf_parameters(self, layer: torch.nn.Module) -> None:
         self._materialize_weight(layer)
@@ -236,6 +267,13 @@ class GGUFLinearMethod(LinearMethodBase):
 
         if self.layout is not None:
             x = self.layout.input_to_gguf(x)
+
+        weight_t = getattr(layer, "weight_t", None)
+        if weight_t is not None:
+            out = x @ weight_t
+            if bias is not None:
+                out.add_(bias)
+            return out
 
         shard_id = layer.weight.shard_id
         if shard_id:
