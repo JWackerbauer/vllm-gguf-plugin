@@ -4,7 +4,7 @@
 // NVIDIA "generic" launch parameters (Ampere and newer).
 //
 // Compared with mmvq.cuh (llama.cpp b2899) this spreads each row over several
-// warps, computes up to 8 input vectors per block against a single pass over
+// warps, computes up to 16 input vectors per block against a single pass over
 // the weights, and uses the newer vec_dot implementations for the i-quants.
 
 // torch's extension build disables implicit half/bfloat16 conversions, which
@@ -86,10 +86,16 @@ MMVQ_TYPE(T_IQ4_NL, QK4_NL, QI4_NL, VDR_IQ4_NL_Q8_1_MMVQ, vec_dot_iq4_nl_q8_1)
 MMVQ_TYPE(T_IQ4_XS, QK_K, QI4_XS, VDR_IQ4_XS_Q8_1_MMVQ, vec_dot_iq4_xs_q8_1)
 #undef MMVQ_TYPE
 
-// llama.cpp MMVQ_PARAMETERS_GENERIC
+// Warps per block as in llama.cpp's MMVQ_PARAMETERS_GENERIC. Rows per block
+// grows with the number of vectors: each activation value a thread loads then
+// serves more weight rows. For 5+ vectors the kernel is bound by those loads,
+// not by DRAM (Nsight Compute: ~55-60% of DRAM bandwidth, ~40% SM throughput).
+// Measured on an RTX 5090 over a 27B IQ3_S/IQ4_XS/IQ3_XXS/Q4_K model, MMVQ
+// time relative to llama.cpp's fixed 2 rows per block: 0.93 at 5 vectors,
+// 0.87 at 8, 0.67 at 10, 0.71 at 15. At 2-4 vectors 2 rows stays best.
 constexpr int calc_nwarps(int ncols_dst) { return ncols_dst <= 4 ? 4 : 2; }
 constexpr int calc_rows_per_block(int ncols_dst) {
-  return ncols_dst == 1 ? 1 : 2;
+  return ncols_dst == 1 ? 1 : ncols_dst <= 4 ? 2 : ncols_dst <= 8 ? 4 : 8;
 }
 
 template <typename T>
@@ -199,6 +205,22 @@ void launch(const void* vx, const block_q8_1* vy, dst_t* dst, const int ncols_x,
       vx, vy, dst, ncols_x, nrows_x, stride_col_y, stride_col_dst);
 }
 
+// launch<type, n> for a runtime n in [1, N]
+template <int type, int N, typename dst_t>
+void launch_upto(const int n, const void* vx, const block_q8_1* vy, dst_t* dst,
+                 const int ncols_x, const int nrows_x, const int stride_col_y,
+                 const int stride_col_dst, cudaStream_t stream) {
+  if constexpr (N > 1) {
+    if (n < N) {
+      launch_upto<type, N - 1>(n, vx, vy, dst, ncols_x, nrows_x, stride_col_y,
+                               stride_col_dst, stream);
+      return;
+    }
+  }
+  launch<type, N>(vx, vy, dst, ncols_x, nrows_x, stride_col_y, stride_col_dst,
+                  stream);
+}
+
 template <int type, typename dst_t>
 void switch_ncols(const void* vx, const block_q8_1* vy, dst_t* dst,
                   const int ncols_x, const int nrows_x, const int ncols_dst,
@@ -211,40 +233,8 @@ void switch_ncols(const void* vx, const block_q8_1* vy, dst_t* dst,
                       : MMVQ_LLAMACPP_MAX_BATCH;
     const block_q8_1* y = vy + j0 * stride_col_y;
     dst_t* d = dst + (size_t)j0 * nrows_x;
-    switch (n) {
-      case 1:
-        launch<type, 1>(vx, y, d, ncols_x, nrows_x, stride_col_y, nrows_x,
-                        stream);
-        break;
-      case 2:
-        launch<type, 2>(vx, y, d, ncols_x, nrows_x, stride_col_y, nrows_x,
-                        stream);
-        break;
-      case 3:
-        launch<type, 3>(vx, y, d, ncols_x, nrows_x, stride_col_y, nrows_x,
-                        stream);
-        break;
-      case 4:
-        launch<type, 4>(vx, y, d, ncols_x, nrows_x, stride_col_y, nrows_x,
-                        stream);
-        break;
-      case 5:
-        launch<type, 5>(vx, y, d, ncols_x, nrows_x, stride_col_y, nrows_x,
-                        stream);
-        break;
-      case 6:
-        launch<type, 6>(vx, y, d, ncols_x, nrows_x, stride_col_y, nrows_x,
-                        stream);
-        break;
-      case 7:
-        launch<type, 7>(vx, y, d, ncols_x, nrows_x, stride_col_y, nrows_x,
-                        stream);
-        break;
-      default:
-        launch<type, 8>(vx, y, d, ncols_x, nrows_x, stride_col_y, nrows_x,
-                        stream);
-        break;
-    }
+    launch_upto<type, MMVQ_LLAMACPP_MAX_BATCH>(n, vx, y, d, ncols_x, nrows_x,
+                                              stride_col_y, nrows_x, stream);
   }
 }
 
