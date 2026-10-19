@@ -2,7 +2,10 @@
 
 #include <cuda_runtime.h>
 
-#define MMVQ_LLAMACPP_MAX_BATCH 8
+// Vectors per pass over the weights; larger batches are split into chunks.
+// One pass up to 16 keeps 2-3 sequences x (1 + 4 MTP drafts) in a single
+// read of the weights.
+#define MMVQ_LLAMACPP_MAX_BATCH 16
 
 enum {
   MMVQ_LLAMACPP_DST_F32 = 0,

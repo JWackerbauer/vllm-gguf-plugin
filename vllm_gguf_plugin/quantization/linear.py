@@ -32,7 +32,7 @@ from .utils import (
     UNQUANTIZED_TYPES,
 )
 
-# MMVQ (mmvq_llamacpp.cu) computes up to 8 vectors per pass over the weights
+# MMVQ (mmvq_llamacpp.cu) computes up to 16 vectors per pass over the weights
 # and stays well ahead of dequantize + GEMM for small batches such as
 # speculative-decoding verification (num_seqs * (1 + num_speculative_tokens)):
 # summed over a 27B IQ3_S model it costs 57 ms at 16 rows vs 258 ms for
