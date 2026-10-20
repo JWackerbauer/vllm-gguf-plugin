@@ -6,7 +6,6 @@ from functools import cache
 from os import PathLike
 from pathlib import Path
 
-import gguf
 import regex as re
 from gguf.constants import Keys, LlamaFileType, VisionProjectorType
 from gguf.quants import GGMLQuantizationType
@@ -14,6 +13,8 @@ from huggingface_hub import hf_hub_download
 from transformers import Gemma3Config, PretrainedConfig, SiglipVisionConfig
 from vllm.logger import init_logger
 from vllm.transformers_utils.repo_utils import list_filtered_repo_files
+
+from .gguf_reader import get_gguf_reader
 
 logger = init_logger(__name__)
 
@@ -263,7 +264,7 @@ def extract_vision_config_from_gguf(mmproj_path: str) -> "SiglipVisionConfig | N
         Exception: Exceptions from GGUF reading (file not found, corrupted
             file, etc.) propagate directly from gguf.GGUFReader
     """
-    reader = gguf.GGUFReader(str(mmproj_path))
+    reader = get_gguf_reader(str(mmproj_path))
 
     # Detect projector type to apply model-specific parameters
     projector_type = None
@@ -334,7 +335,7 @@ def extract_vocab_size_from_gguf(model_path: str | Path) -> int | None:
     if not check_gguf_file(model_path):
         return None
 
-    reader = gguf.GGUFReader(str(model_path))
+    reader = get_gguf_reader(str(model_path))
     field = reader.get_field(Keys.Tokenizer.LIST)
     if field is None:
         logger.warning("Missing tokenizer token list in GGUF file: %s", model_path)
@@ -347,7 +348,7 @@ def extract_lm_head_from_gguf(model_path: str | Path) -> bool:
     if not check_gguf_file(model_path):
         return None
 
-    reader = gguf.GGUFReader(str(model_path))
+    reader = get_gguf_reader(str(model_path))
     return any(tensor.name == "output.weight" for tensor in reader.tensors)
 
 

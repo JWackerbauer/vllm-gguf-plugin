@@ -285,7 +285,7 @@ class TestIsGGUF:
 
 class TestExtractLMHeadFromGGUF:
     @patch("vllm_gguf_plugin.gguf_utils.check_gguf_file", return_value=True)
-    @patch("vllm_gguf_plugin.gguf_utils.gguf.GGUFReader")
+    @patch("vllm_gguf_plugin.gguf_utils.get_gguf_reader")
     def test_matches_only_exact_output_weight(self, mock_reader_cls, _mock_check):
         mock_reader_cls.return_value.tensors = [
             type("Tensor", (), {"name": "blk.0.attn_output.weight"})(),
@@ -295,7 +295,7 @@ class TestExtractLMHeadFromGGUF:
         assert not extract_lm_head_from_gguf("/tmp/model.gguf")
 
     @patch("vllm_gguf_plugin.gguf_utils.check_gguf_file", return_value=True)
-    @patch("vllm_gguf_plugin.gguf_utils.gguf.GGUFReader")
+    @patch("vllm_gguf_plugin.gguf_utils.get_gguf_reader")
     def test_detects_exact_output_weight(self, mock_reader_cls, _mock_check):
         mock_reader_cls.return_value.tensors = [
             type("Tensor", (), {"name": "blk.0.attn_output.weight"})(),

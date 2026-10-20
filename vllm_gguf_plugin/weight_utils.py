@@ -7,12 +7,13 @@ import re
 from collections.abc import Generator, Iterable
 from pathlib import Path
 
-import gguf
 import numpy as np
 import torch
 from huggingface_hub import hf_hub_download, snapshot_download
 from vllm.logger import init_logger
 from vllm.transformers_utils.repo_utils import list_filtered_repo_files
+
+from .gguf_reader import get_gguf_reader
 
 logger = init_logger(__name__)
 
@@ -153,7 +154,7 @@ def get_gguf_tensor_names(gguf_files: Iterable[str]) -> set[str]:
     return {
         tensor.name
         for gguf_file in gguf_files
-        for tensor in gguf.GGUFReader(gguf_file).tensors
+        for tensor in get_gguf_reader(gguf_file).tensors
     }
 
 
@@ -177,7 +178,7 @@ def gguf_quant_weights_iterator_multi(
     _QUANT_TYPES = ("F32", "BF16", "F16")
 
     for gguf_file in gguf_files:
-        reader = gguf.GGUFReader(gguf_file)
+        reader = get_gguf_reader(gguf_file)
         for tensor in reader.tensors:
             if gguf_to_hf_name_map is not None:
                 if tensor.name not in gguf_to_hf_name_map:
@@ -220,7 +221,7 @@ def get_gguf_unquantized_params(gguf_files: list[str]) -> list[str]:
         {
             tensor.name
             for gguf_file in gguf_files
-            for tensor in gguf.GGUFReader(gguf_file).tensors
+            for tensor in get_gguf_reader(gguf_file).tensors
             if tensor.tensor_type.name in _QUANT_TYPES
         }
     )

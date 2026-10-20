@@ -7,7 +7,6 @@ import re
 from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
-import gguf
 import torch
 from vllm.logger import init_logger
 from vllm.model_executor.models.utils import WeightsMapper
@@ -19,6 +18,7 @@ except ImportError:  # vLLM >= 0.32 dropped its copies in favor of transformers'
     from transformers import Qwen3_5Config, Qwen3_5MoeConfig
 
 from ..gguf_files import GGUFModelFiles
+from ..gguf_reader import get_gguf_reader
 from ..gguf_utils import maybe_patch_hf_config_from_gguf
 from ..quantization.layout import GGUFHeadTilingLayout, GGUFLinearLayout
 from ..weight_utils import get_gguf_tensor_names, split_stacked_experts
@@ -104,7 +104,7 @@ def _find_nextn_block_index_from_names(
 def _find_nextn_block_index(gguf_files: Iterable[str]) -> int | None:
     for gguf_file in gguf_files:
         block_index = _find_nextn_block_index_from_names(
-            tensor.name for tensor in gguf.GGUFReader(gguf_file).tensors
+            tensor.name for tensor in get_gguf_reader(gguf_file).tensors
         )
         if block_index is not None:
             return block_index
