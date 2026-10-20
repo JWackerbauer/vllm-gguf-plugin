@@ -23,6 +23,7 @@ import json
 import os
 from functools import wraps
 
+import numpy as np
 import torch
 from vllm.logger import init_logger
 
@@ -73,6 +74,69 @@ def load_draft_vocab(path: str, vocab_size: int) -> torch.Tensor:
     return torch.tensor(ids, dtype=torch.long)
 
 
+# Rebuild the subset from real counts only once this many tokens were counted.
+MIN_COUNTED_TOKENS = 100_000
+
+
+def load_ranked_ids(path: str) -> list[int]:
+    """Token ids in file order (most important first), without duplicates."""
+    with open(path) as f:
+        return list(dict.fromkeys(int(i) for i in json.load(f)))
+
+
+def build_draft_subset(
+    base_ranked: list[int], counts: np.ndarray, k: int, min_count: int = 2
+) -> list[int]:
+    """The k tokens to draft over: real-use tokens by count (seen at least
+    min_count times), then the base ranking for the rest. Sorted ids."""
+    seen = np.flatnonzero(counts >= min_count)
+    by_count = seen[np.argsort(-counts[seen], kind="stable")]
+    chosen = dict.fromkeys(int(t) for t in by_count[:k])
+    for t in base_ranked:
+        if len(chosen) >= k:
+            break
+        chosen.setdefault(t)
+    return sorted(chosen)
+
+
+def _coverage(ids, counts: np.ndarray) -> float:
+    ids = np.asarray([i for i in ids if i < counts.size], dtype=np.int64)
+    total = counts.sum()
+    return float(counts[ids].sum() / total) if total else float("nan")
+
+
+def select_draft_vocab(path: str, vocab_size: int) -> list[int]:
+    """The base subset from path, or one rebuilt from VLLM_GGUF_TOKEN_STATS counts."""
+    from .token_stats import TOKEN_STATS_ENV, load_token_counts
+
+    base = load_ranked_ids(path)
+    stats = os.environ.get(TOKEN_STATS_ENV)
+    counts = load_token_counts(stats) if stats else None
+    if counts is None or counts.sum() < MIN_COUNTED_TOKENS:
+        if stats:
+            logger.info(
+                "Draft vocabulary: %s tokens counted so far, using %s",
+                0 if counts is None else int(counts.sum()),
+                path,
+            )
+        return base
+    counts = counts[:vocab_size]
+    rebuilt = build_draft_subset(base, counts, len(base))
+    logger.info(
+        "Draft vocabulary rebuilt from %d counted tokens: real-use coverage "
+        "%.2f%% (base list %.2f%%)",
+        int(counts.sum()),
+        100 * _coverage(rebuilt, counts),
+        100 * _coverage(base, counts),
+    )
+    try:
+        with open(f"{stats}.draft_vocab.json", "w") as f:
+            json.dump(rebuilt, f)
+    except OSError:
+        pass
+    return rebuilt
+
+
 def prune_draft_vocab(model: torch.nn.Module, token_ids: torch.Tensor) -> None:
     """Give a draft model a lm_head limited to token_ids."""
     full_head = model.lm_head
@@ -107,7 +171,10 @@ def _prune_after_load(speculator, path: str) -> None:
         logger.warning("%s: draft model has no local argmax; skipped.", DRAFT_VOCAB_ENV)
         return
     vocab_size = model.lm_head.weight.shape[0]
-    token_ids = load_draft_vocab(path, vocab_size)
+    ids = sorted(set(select_draft_vocab(path, vocab_size)))
+    if not ids or ids[0] < 0 or ids[-1] >= vocab_size:
+        raise ValueError(f"{path}: token ids must be in [0, {vocab_size})")
+    token_ids = torch.tensor(ids, dtype=torch.long)
     prune_draft_vocab(model, token_ids)
     logger.info("Drafting over %d of %d tokens (%s)", len(token_ids), vocab_size, path)
 
