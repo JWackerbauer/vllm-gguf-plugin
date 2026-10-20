@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 from __future__ import annotations
 
+import contextlib
 import os
 from typing import TYPE_CHECKING, NamedTuple, cast
 
@@ -11,6 +12,9 @@ from huggingface_hub import ResolvedRevision, hf_hub_download
 from vllm.config import ModelConfig, VllmConfig
 from vllm.config.load import LoadConfig
 from vllm.logger import init_logger
+from vllm.model_executor.layers.vocab_parallel_embedding import (
+    UnquantizedEmbeddingMethod,
+)
 from vllm.model_executor.model_loader.base_loader import BaseModelLoader
 from vllm.model_executor.model_loader.utils import (
     initialize_model,
@@ -40,6 +44,26 @@ if TYPE_CHECKING:
     from .quantization.layout import GGUFLinearLayout
 
 logger = init_logger(__name__)
+
+
+@contextlib.contextmanager
+def unquantized_vocab_weights_on_meta():
+    """Create unquantized embedding/LM-head weights on the meta device.
+
+    For draft models whose vocab modules are swapped for the target's before
+    first use; using one that was not swapped fails loudly (meta tensor).
+    """
+    original = UnquantizedEmbeddingMethod.create_weights
+
+    def create_weights(self, layer, *args, **kwargs):
+        with torch.device("meta"):
+            original(self, layer, *args, **kwargs)
+
+    UnquantizedEmbeddingMethod.create_weights = create_weights
+    try:
+        yield
+    finally:
+        UnquantizedEmbeddingMethod.create_weights = original
 
 
 class GGUFLoadPlan(NamedTuple):
@@ -214,8 +238,13 @@ class GGUFModelLoader(BaseModelLoader):
         )
 
         target_device = torch.device(device_config.device)
+        vocab_ctx = (
+            unquantized_vocab_weights_on_meta()
+            if adapter.vocab_shared_with_target
+            else contextlib.nullcontext()
+        )
         with set_default_torch_dtype(model_config.dtype):
-            with target_device:
+            with target_device, vocab_ctx:
                 model = initialize_model(
                     vllm_config=vllm_config,
                     model_config=model_config,
