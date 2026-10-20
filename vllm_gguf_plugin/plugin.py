@@ -18,6 +18,7 @@ from vllm.transformers_utils.config import get_config_parser, register_config_pa
 from .config_parser import GGUFConfigParser
 from .draft_vocab import _patch_proposer_load_model
 from .gguf_utils import check_gguf_file, is_gguf, is_remote_gguf, split_remote_gguf
+from .lmcache_identity import _patch_lmcache_connector
 from .loader import GGUFModelLoader
 from .quantization import DiffusionGGUFConfig, GGUFConfig
 from .token_stats import _patch_output_processor
@@ -165,3 +166,4 @@ def register() -> None:
     _patch_diffusers_loader()
     _patch_proposer_load_model()
     _patch_output_processor()
+    _patch_lmcache_connector()
