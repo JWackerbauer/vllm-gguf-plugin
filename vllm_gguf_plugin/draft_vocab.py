@@ -26,7 +26,8 @@ from functools import wraps
 import torch
 from vllm.logger import init_logger
 
-logger = init_logger(__name__)
+# under the vllm namespace: vLLM only attaches log handlers to `vllm.*` loggers
+logger = init_logger("vllm.gguf_plugin.draft_vocab")
 
 DRAFT_VOCAB_ENV = "VLLM_GGUF_DRAFT_VOCAB"
 
@@ -92,13 +93,26 @@ def prune_draft_vocab(model: torch.nn.Module, token_ids: torch.Tensor) -> None:
     model.compute_logits = compute_logits
 
 
-def _patch_proposer_load_model() -> None:
-    path = os.environ.get(DRAFT_VOCAB_ENV)
-    if not path:
+def _prune_after_load(speculator, path: str) -> None:
+    """Shared by the V1 proposer and the V2 (Model Runner V2) speculator hooks."""
+    model = speculator.model
+    if not getattr(speculator, "use_local_argmax_reduction", False):
+        logger.warning(
+            "%s is set but use_local_argmax_reduction is off in "
+            "--speculative-config; drafting over the full vocabulary.",
+            DRAFT_VOCAB_ENV,
+        )
         return
-    from vllm.v1.spec_decode import llm_base_proposer
+    if not hasattr(model, "get_top_tokens") or not hasattr(model, "lm_head"):
+        logger.warning("%s: draft model has no local argmax; skipped.", DRAFT_VOCAB_ENV)
+        return
+    vocab_size = model.lm_head.weight.shape[0]
+    token_ids = load_draft_vocab(path, vocab_size)
+    prune_draft_vocab(model, token_ids)
+    logger.info("Drafting over %d of %d tokens (%s)", len(token_ids), vocab_size, path)
 
-    cls = llm_base_proposer.SpecDecodeBaseProposer
+
+def _wrap_load_model(cls, path: str) -> None:
     if getattr(cls, "_gguf_draft_vocab_patched", False):
         return
     original_load_model = cls.load_model
@@ -106,25 +120,23 @@ def _patch_proposer_load_model() -> None:
     @wraps(original_load_model)
     def load_model(self, target_model):
         original_load_model(self, target_model)
-        model = self.model
-        if not getattr(self, "use_local_argmax_reduction", False):
-            logger.warning(
-                "%s is set but use_local_argmax_reduction is off in "
-                "--speculative-config; drafting over the full vocabulary.",
-                DRAFT_VOCAB_ENV,
-            )
-            return
-        if not hasattr(model, "get_top_tokens") or not hasattr(model, "lm_head"):
-            logger.warning(
-                "%s: draft model has no local argmax; skipped.", DRAFT_VOCAB_ENV
-            )
-            return
-        vocab_size = model.lm_head.weight.shape[0]
-        token_ids = load_draft_vocab(path, vocab_size)
-        prune_draft_vocab(model, token_ids)
-        logger.info(
-            "Drafting over %d of %d tokens (%s)", len(token_ids), vocab_size, path
-        )
+        _prune_after_load(self, path)
 
     cls.load_model = load_model
     cls._gguf_draft_vocab_patched = True
+
+
+def _patch_proposer_load_model() -> None:
+    path = os.environ.get(DRAFT_VOCAB_ENV)
+    if not path:
+        return
+    # V1 model runner (EagleProposer and friends)
+    from vllm.v1.spec_decode import llm_base_proposer
+
+    _wrap_load_model(llm_base_proposer.SpecDecodeBaseProposer, path)
+    # Model Runner V2 (the default in vLLM 0.32): MTP/EAGLE speculators
+    try:
+        from vllm.v1.worker.gpu.spec_decode import speculator as v2_speculator
+    except ImportError:
+        return
+    _wrap_load_model(v2_speculator.DraftModelSpeculator, path)
