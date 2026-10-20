@@ -97,3 +97,20 @@ def test_load_draft_vocab_validates_ids(tmp_path):
     bad.write_text(json.dumps([1, VOCAB]))
     with pytest.raises(ValueError):
         load_draft_vocab(str(bad), VOCAB)
+
+
+@pytest.mark.parametrize("local_argmax", [True, False])
+def test_load_hook_prunes_only_with_local_argmax(draft, tmp_path, local_argmax):
+    from vllm_gguf_plugin.draft_vocab import _prune_after_load
+
+    model, full = draft
+    path = tmp_path / "ids.json"
+    path.write_text(json.dumps(SUBSET))
+    speculator = SimpleNamespace(model=model, use_local_argmax_reduction=local_argmax)
+
+    _prune_after_load(speculator, str(path))
+
+    if local_argmax:
+        assert model.lm_head.weight.shape == (len(SUBSET), HIDDEN)
+    else:
+        assert model.lm_head is full
