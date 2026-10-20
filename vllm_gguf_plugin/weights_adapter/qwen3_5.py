@@ -391,6 +391,7 @@ class Qwen35MtpGGUFAdapter(BaseGGUFWeightsAdapter):
     #: embed_tokens/lm_head are shared from the target model after loading,
     #: so they must stay ordinary vocab modules that never expect GGUF weights.
     extra_unquantized_modules = ("embed_tokens", "lm_head")
+    vocab_shared_with_target = True
 
     @classmethod
     def matches(cls, config) -> bool:

@@ -28,6 +28,11 @@ class BaseGGUFWeightsAdapter(ABC):
     #: model in speculative decoding) and must stay unquantized.
     extra_unquantized_modules: tuple[str, ...] = ()
 
+    #: The embedding and LM head are replaced by the target model's right after
+    #: loading (speculative drafts). They are then created on the meta device,
+    #: so they never take memory: 2.4 GiB each in bf16 for a 248k vocabulary.
+    vocab_shared_with_target: bool = False
+
     @classmethod
     @abstractmethod
     def matches(cls, config: PretrainedConfig) -> bool:
