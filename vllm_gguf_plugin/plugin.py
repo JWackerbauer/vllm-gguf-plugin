@@ -20,6 +20,7 @@ from .draft_vocab import _patch_proposer_load_model
 from .gguf_utils import check_gguf_file, is_gguf, is_remote_gguf, split_remote_gguf
 from .loader import GGUFModelLoader
 from .quantization import DiffusionGGUFConfig, GGUFConfig
+from .token_stats import _patch_output_processor
 from .weights_adapter.diffusion.integration import _patch_diffusers_loader
 
 OOTGGUFConfig = GGUFConfig
@@ -148,3 +149,4 @@ def register() -> None:
     _patch_speculator_probe()
     _patch_diffusers_loader()
     _patch_proposer_load_model()
+    _patch_output_processor()
