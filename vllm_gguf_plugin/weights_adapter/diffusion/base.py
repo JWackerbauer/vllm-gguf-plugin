@@ -6,10 +6,11 @@ from collections.abc import Generator, Iterable
 from dataclasses import dataclass
 from typing import Any
 
-import gguf
 import numpy as np
 import torch
 from vllm.model_executor.models.utils import WeightsMapper
+
+from ...gguf_reader import get_gguf_reader
 
 UNQUANTIZED_GGUF_TYPE_NAMES = {"F32", "F16", "BF16"}
 
@@ -52,7 +53,7 @@ class DiffusionGGUFAdapter(ABC):
     def unquantized_weight_names(self) -> Iterable[str]:
         weights: Iterable[tuple[str, None]] = (
             (tensor.name, None)
-            for tensor in gguf.GGUFReader(self.gguf_file).tensors
+            for tensor in get_gguf_reader(self.gguf_file).tensors
             if tensor.tensor_type.name in UNQUANTIZED_GGUF_TYPE_NAMES
         )
         mapper = getattr(self, "gguf_to_hf_mapper", None)
@@ -83,7 +84,7 @@ def gguf_quant_weights_iterator(
     tensors keep their packed data under the ``weight`` name).
     """
 
-    reader = gguf.GGUFReader(gguf_file)
+    reader = get_gguf_reader(gguf_file)
 
     # Pass 1: weight types first
     for tensor in reader.tensors:
