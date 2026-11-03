@@ -146,9 +146,10 @@ def _register_omni_diffusion_quantization() -> None:
 
 
 def _patch_qwen4exp_pipeline_parallel() -> None:
-    from .qwen4exp_pp import patch_config_check
+    from .qwen4exp_pp import patch_config_check, patch_kv_cache_tensors
 
     patch_config_check()
+    patch_kv_cache_tensors()
 
 
 def _patch_per_device_capability() -> None:

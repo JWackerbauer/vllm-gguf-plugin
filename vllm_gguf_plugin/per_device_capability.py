@@ -38,3 +38,4 @@ def patch_platform() -> None:
 
         setattr(cls, name, classmethod(functools.wraps(original)(wrapper)))
     cls._gguf_per_device_capability = True
+

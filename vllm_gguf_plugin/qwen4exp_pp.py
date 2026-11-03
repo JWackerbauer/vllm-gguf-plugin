@@ -93,3 +93,42 @@ def patch_model_state() -> None:
 
     cls.__init__ = __init__
     cls._gguf_pp_patched = True
+
+
+def patch_kv_cache_tensors() -> None:
+    """Drop KV cache tensors for layers on other pipeline stages.
+
+    The KV cache groups are unified over all stages, so a cache type that only one
+    stage has (Qwen4Exp's PLE conv state, on the first stage) is an empty group on
+    the others, while their tensor list still names the other stage's layer, and
+    ``allocate_kv_cache`` fails looking for it (StopIteration). Per worker, keep
+    only the layers this worker's groups contain.
+    """
+    try:
+        from vllm.v1.worker.gpu_worker import Worker
+    except ImportError:
+        return
+    if getattr(Worker, "_gguf_pp_kv_patched", False):
+        return
+    original = Worker.initialize_from_config
+
+    @functools.wraps(original)
+    def initialize_from_config(self, kv_cache_config, *args, **kwargs):
+        own = {n for g in kv_cache_config.kv_cache_groups for n in g.layer_names}
+        kept = []
+        for tensor in kv_cache_config.kv_cache_tensors:
+            layers = [n for n in tensor.layers if n in own]
+            if layers:
+                if len(layers) != len(tensor.layers):
+                    tensor = copy.copy(tensor)
+                    object.__setattr__(tensor, "layers", layers)
+                kept.append(tensor)
+        if len(kept) != len(kv_cache_config.kv_cache_tensors):
+            logger.info("Dropped %d KV cache tensor(s) of other pipeline stages",
+                        len(kv_cache_config.kv_cache_tensors) - len(kept))
+            kv_cache_config = copy.copy(kv_cache_config)
+            object.__setattr__(kv_cache_config, "kv_cache_tensors", kept)
+        return original(self, kv_cache_config, *args, **kwargs)
+
+    Worker.initialize_from_config = initialize_from_config
+    Worker._gguf_pp_kv_patched = True
