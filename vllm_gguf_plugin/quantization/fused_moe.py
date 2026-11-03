@@ -31,7 +31,6 @@ from .params import (
 )
 from .utils import DEQUANT_TYPES, MMQ_QUANT_TYPES, MMVQ_QUANT_TYPES, logger
 
-
 _MAX_GRID_Z = 65535
 # Types without MMQ kernels (i-quants) run batches of at least this many tokens as
 # dequantize + Triton BF16 grouped GEMM, a chunk of experts at a time; the per-token
@@ -67,7 +66,7 @@ def _fused_moe_dequant(
     E, N, _ = w1.shape
     K = x.shape[1]
     H = w2.shape[1]
-    I = N // 2
+    inter = N // 2
     # -1 marks unused slots (padding): give them weight 0 and a valid id
     invalid = topk_ids < 0
     topk_weights = topk_weights.masked_fill(invalid, 0)
@@ -80,10 +79,14 @@ def _fused_moe_dequant(
             w1[start:end].reshape(n * N, -1), weight_type, K, n * N, x.dtype
         ).view(n, N, K)
         w2d = ops.ggml_dequantize(
-            w2[start:end].reshape(n * H, -1), weight_type2, I, n * H, x.dtype
-        ).view(n, H, I)
+            w2[start:end].reshape(n * H, -1), weight_type2, inter, n * H, x.dtype
+        ).view(n, H, inter)
         out += fused_experts(
-            x, w13, w2d, topk_weights, topk_ids,
+            x,
+            w13,
+            w2d,
+            topk_weights,
+            topk_ids,
             activation=activation,
             global_num_experts=E,
             expert_map=_chunk_expert_map(E, start, end, x.device),
@@ -159,7 +162,13 @@ def _fused_moe_gguf(
         and weight_type2 in DEQUANT_TYPES
     ):
         out_hidden_states = _fused_moe_dequant(
-            x, w1, w2, topk_weights, topk_ids, weight_type, weight_type2,
+            x,
+            w1,
+            w2,
+            topk_weights,
+            topk_ids,
+            weight_type,
+            weight_type2,
             activation_enum,
         )
     elif weight_type2 in MMVQ_QUANT_TYPES and weight_type in MMVQ_QUANT_TYPES:
@@ -178,7 +187,9 @@ def _fused_moe_gguf(
             end = min(start + chunk, x.shape[0])
             num_tokens = end - start
             ids = topk_ids[start:end]
-            out = ops.ggml_moe_a8_vec(x[start:end], w1, ids, top_k, weight_type, N, num_tokens)
+            out = ops.ggml_moe_a8_vec(
+                x[start:end], w1, ids, top_k, weight_type, N, num_tokens
+            )
             out = act(out)
 
             out = ops.ggml_moe_a8_vec(

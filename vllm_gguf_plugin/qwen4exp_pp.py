@@ -68,9 +68,12 @@ def patch_config_check() -> None:
             original(vllm_config)
         finally:
             text_config.ple_layer_ids = ple_ids
-        logger.info("Qwen4Exp: PLE layers %s are on the first pipeline stage, "
-                    "allowing pipeline_parallel_size=%d", ple_ids,
-                    vllm_config.parallel_config.pipeline_parallel_size)
+        logger.info(
+            "Qwen4Exp: PLE layers %s are on the first pipeline stage, "
+            "allowing pipeline_parallel_size=%d",
+            ple_ids,
+            vllm_config.parallel_config.pipeline_parallel_size,
+        )
 
     cls.verify_and_update_config = staticmethod(verify_and_update_config)
     cls._gguf_pp_patched = True
@@ -124,8 +127,10 @@ def patch_kv_cache_tensors() -> None:
                     object.__setattr__(tensor, "layers", layers)
                 kept.append(tensor)
         if len(kept) != len(kv_cache_config.kv_cache_tensors):
-            logger.info("Dropped %d KV cache tensor(s) of other pipeline stages",
-                        len(kv_cache_config.kv_cache_tensors) - len(kept))
+            logger.info(
+                "Dropped %d KV cache tensor(s) of other pipeline stages",
+                len(kv_cache_config.kv_cache_tensors) - len(kept),
+            )
             kv_cache_config = copy.copy(kv_cache_config)
             object.__setattr__(kv_cache_config, "kv_cache_tensors", kept)
         return original(self, kv_cache_config, *args, **kwargs)

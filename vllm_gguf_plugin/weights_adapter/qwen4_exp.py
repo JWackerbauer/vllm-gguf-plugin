@@ -26,12 +26,12 @@ import torch
 from vllm.logger import init_logger
 from vllm.model_executor.models.utils import WeightsMapper
 
+from .. import qwen4exp_pp
 from ..gguf_files import GGUFModelFiles
 from ..gguf_reader import get_gguf_reader
-from .. import qwen4exp_pp
 from ..gguf_utils import maybe_patch_hf_config_from_gguf
 from ..quantization import qwen4exp_ple
-from ..weight_utils import get_gguf_tensor_names, split_stacked_experts
+from ..weight_utils import get_gguf_tensor_names
 from .base import GGUFWeight
 from .qwen3_5 import Qwen35GGUFAdapter, _map_tensor_name, qwen35_layer_substr
 
@@ -79,7 +79,8 @@ def build_qwen4exp_mapper(is_multimodal: bool) -> WeightsMapper:
     backbone = "model.language_model." if is_multimodal else "model."
     return WeightsMapper(
         orig_to_new_prefix={
-            "output_hc_down.": backbone + "hyper_connection_mixer.input_mix_weight_down.",
+            "output_hc_down.": backbone
+            + "hyper_connection_mixer.input_mix_weight_down.",
             "output_hc_up.": backbone + "hyper_connection_mixer.input_mix_weight_up.",
             "output_hc_norm.": backbone + "hyper_connection_mixer.hc_norm.",
             "token_embd.": backbone + "embed_tokens.",
@@ -107,7 +108,10 @@ def _unfuse_qsa_indexer() -> None:
 
     from ..quantization import GGUFConfig
 
-    for cls in (q4_model.Qwen4ExpForCausalLM, q4_model.Qwen4ExpForConditionalGeneration):
+    for cls in (
+        q4_model.Qwen4ExpForCausalLM,
+        q4_model.Qwen4ExpForConditionalGeneration,
+    ):
         mapping = dict(cls.packed_modules_mapping)
         mapping["qkv_proj"] = [m for m in mapping["qkv_proj"] if "indexer" not in m]
         cls.packed_modules_mapping = mapping
@@ -121,7 +125,10 @@ def _unfuse_qsa_indexer() -> None:
         pass
 
     def __init__(self, *args, vllm_config, **kwargs):
-        if isinstance(vllm_config.quant_config, GGUFConfig) and vllm_config.lora_config is None:
+        if (
+            isinstance(vllm_config.quant_config, GGUFConfig)
+            and vllm_config.lora_config is None
+        ):
             vllm_config = copy.copy(vllm_config)
             object.__setattr__(vllm_config, "lora_config", _NoLoRA())
         original_init(self, *args, vllm_config=vllm_config, **kwargs)
@@ -152,7 +159,9 @@ class Qwen4ExpGGUFAdapter(Qwen35GGUFAdapter):
         hf_config: PretrainedConfig,
     ) -> PretrainedConfig:
         if files.mm_proj is not None:
-            raise NotImplementedError("Qwen4Exp GGUF vision (mmproj) is not supported yet")
+            raise NotImplementedError(
+                "Qwen4Exp GGUF vision (mmproj) is not supported yet"
+            )
         patched = maybe_patch_hf_config_from_gguf(files.primary_backbone, hf_config)
         reader = get_gguf_reader(files.primary_backbone)
         text_config = patched.get_text_config()
@@ -166,7 +175,8 @@ class Qwen4ExpGGUFAdapter(Qwen35GGUFAdapter):
         if n_experts is not None and n_experts != text_config.num_experts:
             logger.info(
                 "Qwen4Exp GGUF keeps %d of %d experts per layer",
-                n_experts, text_config.num_experts,
+                n_experts,
+                text_config.num_experts,
             )
             text_config.update({"num_experts": int(n_experts)})
         patched.architectures = [QWEN4EXP_ARCHITECTURES[patched.model_type]]
@@ -184,15 +194,19 @@ class Qwen4ExpGGUFAdapter(Qwen35GGUFAdapter):
         unmapped: list[str] = []
         for name in sorted(get_gguf_tensor_names(files.all_files)):
             if name == PLE_TABLE or ".nextn." in name:
-                continue  # PLE table: filled directly (qwen4exp_ple); MTP: separate file
+                # PLE table: filled directly (qwen4exp_ple); MTP: separate file
+                continue
             mapped = _map_tensor_name(mapper, name)
             if mapped is None:
                 unmapped.append(name)
             else:
                 name_map[name] = mapped
         if unmapped:
-            logger.warning("No HF name for %d Qwen4Exp GGUF tensor(s), skipping: %s",
-                           len(unmapped), unmapped)
+            logger.warning(
+                "No HF name for %d Qwen4Exp GGUF tensor(s), skipping: %s",
+                len(unmapped),
+                unmapped,
+            )
         qwen4exp_ple.register_gguf_table(files.all_files, PLE_TABLE)
         return name_map
 
@@ -209,7 +223,11 @@ class Qwen4ExpGGUFAdapter(Qwen35GGUFAdapter):
                 if ".self_attn.indexer.index_qk_proj.weight" in name:
                     staged_q[name] = weight
                 elif _INDEXER_K_STAGE in name:
-                    staged_k[name.replace(_INDEXER_K_STAGE, "self_attn.indexer.index_qk_proj.")] = weight
+                    staged_k[
+                        name.replace(
+                            _INDEXER_K_STAGE, "self_attn.indexer.index_qk_proj."
+                        )
+                    ] = weight
                 else:
                     # PLE grouped norms are stored +1 like the other norms, but are not
                     # named "...norm.weight", which the Qwen3.5 rule keys on
@@ -219,10 +237,15 @@ class Qwen4ExpGGUFAdapter(Qwen35GGUFAdapter):
                     continue
                 for key in list(staged_q):
                     if key in staged_k:
-                        yield key, torch.cat([staged_q.pop(key), staged_k.pop(key)], dim=0)
+                        yield (
+                            key,
+                            torch.cat([staged_q.pop(key), staged_k.pop(key)], dim=0),
+                        )
             if staged_q or staged_k:
-                raise ValueError(f"indexer q/k projection missing its other half: "
-                                 f"{sorted(staged_q) + sorted(staged_k)}")
+                raise ValueError(
+                    f"indexer q/k projection missing its other half: "
+                    f"{sorted(staged_q) + sorted(staged_k)}"
+                )
 
         # the Qwen3.5 rules (norms -1, GDN head order, A_log, conv1d, 1-D gates) then
         # apply to the renamed tensors; split_stacked_experts is done there too
@@ -233,6 +256,7 @@ QWEN4EXP_MTP_MODEL_TYPES = ("qwen4_exp_mtp",)
 # staging names for tensors the GGUF stores fused; split in transform_weights
 _MTP_EH_STAGE = "mtp.fc_eh."
 _DOWN_INJECT_STAGE = "hyper_connection.down_inject."
+_MTP_MIXER = "mtp.hyper_connection_mixer."
 # vLLM builds the hyper-connection linears unquantized (BF16)
 _HC_BF16_PARAMS = (
     "input_mix_weight_down.weight",
@@ -248,9 +272,9 @@ def build_qwen4exp_mtp_mapper(block_index: int) -> WeightsMapper:
             f"{block}nextn.eh_proj.": _MTP_EH_STAGE,
             f"{block}nextn.enorm.": "mtp.pre_fc_norm_embedding.",
             f"{block}nextn.hnorm.": "mtp.pre_fc_norm_hidden.",
-            f"{block}nextn.hc_head_down.": "mtp.hyper_connection_mixer.input_mix_weight_down.",
-            f"{block}nextn.hc_head_up.": "mtp.hyper_connection_mixer.input_mix_weight_up.",
-            f"{block}nextn.hc_head_norm.": "mtp.hyper_connection_mixer.hc_norm.",
+            f"{block}nextn.hc_head_down.": _MTP_MIXER + "input_mix_weight_down.",
+            f"{block}nextn.hc_head_up.": _MTP_MIXER + "input_mix_weight_up.",
+            f"{block}nextn.hc_head_norm.": _MTP_MIXER + "hc_norm.",
             block: "mtp.layers.0.",
             "token_embd.": "embed_tokens.",
             "output.": "lm_head.",
@@ -269,7 +293,9 @@ def _dequantize_rows(weight: torch.Tensor, weight_type: int) -> torch.Tensor:
     """Dequantize raw GGUF rows ([rows, bytes] uint8) to BF16 on the CPU."""
     import gguf
 
-    values = gguf.quants.dequantize(weight.numpy(), gguf.GGMLQuantizationType(weight_type))
+    values = gguf.quants.dequantize(
+        weight.numpy(), gguf.GGMLQuantizationType(weight_type)
+    )
     return torch.from_numpy(values).to(torch.bfloat16)
 
 
@@ -321,6 +347,7 @@ def _keep_draft_gguf_quant_config() -> None:
     if not hasattr(mtp.Qwen4ExpMTP, "get_top_tokens"):
         mtp.Qwen4ExpMTP.get_top_tokens = LocalArgmaxMixin.get_top_tokens
 
+
 class Qwen4ExpMtpGGUFAdapter(Qwen4ExpGGUFAdapter):
     """MTP draft for Qwen3.8-Flash-Next from a GGUF holding one nextn block.
 
@@ -342,7 +369,9 @@ class Qwen4ExpMtpGGUFAdapter(Qwen4ExpGGUFAdapter):
     def architecture(cls, config) -> str | None:
         return "Qwen4ExpMTP"
 
-    def patch_hf_config(self, files: GGUFModelFiles, hf_config: PretrainedConfig) -> PretrainedConfig:
+    def patch_hf_config(
+        self, files: GGUFModelFiles, hf_config: PretrainedConfig
+    ) -> PretrainedConfig:
         reader = get_gguf_reader(files.primary_backbone)
         text_config = hf_config.get_text_config()
         n_experts = _gguf_field(reader, f"{GGUF_ARCH}.expert_count")
@@ -352,11 +381,18 @@ class Qwen4ExpMtpGGUFAdapter(Qwen4ExpGGUFAdapter):
         _keep_draft_gguf_quant_config()
         return hf_config
 
-    def build_name_map(self, files: GGUFModelFiles, model_config: ModelConfig) -> dict[str, str]:
+    def build_name_map(
+        self, files: GGUFModelFiles, model_config: ModelConfig
+    ) -> dict[str, str]:
         reader = get_gguf_reader(files.primary_backbone)
         block_index = int(_gguf_field(reader, f"{GGUF_ARCH}.block_count")) - 1
-        if not any(f"blk.{block_index}.nextn." in n for n in get_gguf_tensor_names(files.all_files)):
-            raise RuntimeError(f"No nextn block {block_index} in {files.primary_backbone}")
+        if not any(
+            f"blk.{block_index}.nextn." in n
+            for n in get_gguf_tensor_names(files.all_files)
+        ):
+            raise RuntimeError(
+                f"No nextn block {block_index} in {files.primary_backbone}"
+            )
         mapper = build_qwen4exp_mtp_mapper(block_index)
         name_map, unmapped = {}, []
         for name in sorted(get_gguf_tensor_names(files.all_files)):
@@ -366,18 +402,25 @@ class Qwen4ExpMtpGGUFAdapter(Qwen4ExpGGUFAdapter):
             else:
                 name_map[name] = mapped
         if unmapped:
-            logger.warning("No HF name for %d Qwen4Exp MTP tensor(s), skipping: %s",
-                           len(unmapped), unmapped)
+            logger.warning(
+                "No HF name for %d Qwen4Exp MTP tensor(s), skipping: %s",
+                len(unmapped),
+                unmapped,
+            )
         # vLLM numbers the draft layer after the trunk (module prefix
         # ...layers.<num_hidden_layers>), while its weights load as layers.0; the
         # quant config matches unquantized modules by substring of the prefix. The
         # only BF16 linear in the block is the QSA indexer projection.
         n = model_config.hf_config.get_text_config().num_hidden_layers
-        self.extra_unquantized_modules = (f"layers.{n}.self_attn.indexer.index_qk_proj",)
+        self.extra_unquantized_modules = (
+            f"layers.{n}.self_attn.indexer.index_qk_proj",
+        )
         logger.info("Loading Qwen4Exp MTP draft from GGUF block %d", block_index)
         return name_map
 
-    def transform_weights(self, weights: Iterable[GGUFWeight], model_config: ModelConfig) -> Iterable[GGUFWeight]:
+    def transform_weights(
+        self, weights: Iterable[GGUFWeight], model_config: ModelConfig
+    ) -> Iterable[GGUFWeight]:
         text_config = model_config.hf_config.get_text_config()
         lowrank = int(text_config.hc_lowrank)
 
@@ -400,18 +443,34 @@ class Qwen4ExpMtpGGUFAdapter(Qwen4ExpGGUFAdapter):
                     if qtype is not None:
                         import gguf
 
-                        block, _ = gguf.GGML_QUANT_SIZES[gguf.GGMLQuantizationType(qtype)]
+                        block, _ = gguf.GGML_QUANT_SIZES[
+                            gguf.GGMLQuantizationType(qtype)
+                        ]
                         assert text_config.hidden_size % block == 0
-                    for part, chunk in (("fc_embedding", weight[:, :half]), ("fc_hidden", weight[:, half:])):
-                        yield name.replace(_MTP_EH_STAGE, f"mtp.{part}."), chunk.contiguous()
+                    for part, chunk in (
+                        ("fc_embedding", weight[:, :half]),
+                        ("fc_hidden", weight[:, half:]),
+                    ):
+                        yield (
+                            name.replace(_MTP_EH_STAGE, f"mtp.{part}."),
+                            chunk.contiguous(),
+                        )
                     continue
-                if qtype is not None and name.endswith(_HC_BF16_PARAMS + (_DOWN_INJECT_STAGE + "weight",)):
+                if qtype is not None and name.endswith(
+                    _HC_BF16_PARAMS + (_DOWN_INJECT_STAGE + "weight",)
+                ):
                     weight, qtype = _dequantize_rows(weight, qtype), None
                 if _DOWN_INJECT_STAGE in name:
                     assert qtype is None
                     base = name.removesuffix(_DOWN_INJECT_STAGE + "weight")
-                    yield base + "hyper_connection.input_mix_weight_down.weight", weight[:lowrank].contiguous()
-                    yield base + "hyper_connection.block_inject_weight.weight", weight[lowrank:].contiguous()
+                    yield (
+                        base + "hyper_connection.input_mix_weight_down.weight",
+                        weight[:lowrank].contiguous(),
+                    )
+                    yield (
+                        base + "hyper_connection.block_inject_weight.weight",
+                        weight[lowrank:].contiguous(),
+                    )
                     continue
                 if qtype is not None:
                     yield name.replace("weight", "weight_type"), torch.tensor(qtype)

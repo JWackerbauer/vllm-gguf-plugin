@@ -57,12 +57,21 @@ def register_gguf_table(gguf_files, tensor_name: str) -> None:
                 values, rows = (int(x) for x in t.shape)  # GGUF dims: innermost first
                 block, type_size = gguf.GGML_QUANT_SIZES[t.tensor_type]
                 _SOURCE = _GGUFTable(
-                    path=os.fspath(path), offset=int(t.data_offset), weight_type=int(t.tensor_type),
-                    rows=rows, values_per_row=values, row_bytes=values // block * type_size,
+                    path=os.fspath(path),
+                    offset=int(t.data_offset),
+                    weight_type=int(t.tensor_type),
+                    rows=rows,
+                    values_per_row=values,
+                    row_bytes=values // block * type_size,
                 )
-                logger.info("Qwen4Exp PLE table: %s, %d rows x %d values, %s (%.1f GiB)",
-                            os.path.basename(path), rows, values, t.tensor_type.name,
-                            rows * _SOURCE.row_bytes / 2**30)
+                logger.info(
+                    "Qwen4Exp PLE table: %s, %d rows x %d values, %s (%.1f GiB)",
+                    os.path.basename(path),
+                    rows,
+                    values,
+                    t.tensor_type.name,
+                    rows * _SOURCE.row_bytes / 2**30,
+                )
                 _patch_method_selection()
                 return
     raise ValueError(f"{tensor_name} not found in {list(gguf_files)}")
@@ -91,16 +100,27 @@ def _make_method(ne):
     class GGUFPLEEmbeddingMethod(ne.Qwen4ExpPLEEmbeddingMethod):
         """Raw GGUF rows in the PLE table, dequantized after lookup."""
 
-        def create_weights(self, layer: nn.Module, input_size_per_partition: int,
-                           output_partition_sizes: list[int], input_size: int,
-                           output_size: int, params_dtype: torch.dtype, **extra_weight_attrs):
+        def create_weights(
+            self,
+            layer: nn.Module,
+            input_size_per_partition: int,
+            output_partition_sizes: list[int],
+            input_size: int,
+            output_size: int,
+            params_dtype: torch.dtype,
+            **extra_weight_attrs,
+        ):
             del input_size, output_size, params_dtype, extra_weight_attrs
             src = _SOURCE
             if src is None:
-                raise RuntimeError("GGUF PLE table was not registered before model init")
+                raise RuntimeError(
+                    "GGUF PLE table was not registered before model init"
+                )
             if input_size_per_partition != src.values_per_row:
-                raise ValueError(f"PLE head_dim {input_size_per_partition} != GGUF row "
-                                 f"width {src.values_per_row}")
+                raise ValueError(
+                    f"PLE head_dim {input_size_per_partition} != GGUF row "
+                    f"width {src.values_per_row}"
+                )
             rows = sum(output_partition_sizes)
             if rows < src.rows:
                 raise ValueError(f"PLE table has {rows} rows, GGUF {src.rows}")
@@ -116,27 +136,41 @@ def _make_method(ne):
 
         def embedding(self, layer: nn.Module, input_: torch.Tensor) -> torch.Tensor:
             return torch.index_select(layer.weight, 0, input_.reshape(-1)).view(
-                *input_.shape, layer.weight.shape[1])
+                *input_.shape, layer.weight.shape[1]
+            )
 
-        def dequantize(self, layer: nn.Module, embeddings: torch.Tensor,
-                       output_dtype: torch.dtype) -> torch.Tensor:
+        def dequantize(
+            self, layer: nn.Module, embeddings: torch.Tensor, output_dtype: torch.dtype
+        ) -> torch.Tensor:
             row_bytes = layer.weight.shape[1]
             quant = embeddings.reshape(-1, row_bytes).contiguous()
-            values = ops.ggml_dequantize(quant, layer.gguf_weight_type,
-                                         layer.gguf_values_per_row, quant.shape[0], output_dtype)
+            values = ops.ggml_dequantize(
+                quant,
+                layer.gguf_weight_type,
+                layer.gguf_values_per_row,
+                quant.shape[0],
+                output_dtype,
+            )
             return values.reshape(*embeddings.shape[:-1], -1)
 
         def process_weights_after_loading(self, layer: nn.Module) -> None:
             src = _SOURCE
             dst = layer.weight.data.view(-1)
             total = src.rows * src.row_bytes
-            data = np.memmap(src.path, dtype=np.uint8, mode="r", offset=src.offset, shape=(total,))
+            data = np.memmap(
+                src.path, dtype=np.uint8, mode="r", offset=src.offset, shape=(total,)
+            )
             for start in range(0, total, _CHUNK_BYTES):
                 end = min(start + _CHUNK_BYTES, total)
-                dst[start:end].copy_(torch.from_numpy(np.ascontiguousarray(data[start:end])))
+                dst[start:end].copy_(
+                    torch.from_numpy(np.ascontiguousarray(data[start:end]))
+                )
             dst[total:].zero_()
             del data
-            logger.info("Filled Qwen4Exp PLE table from GGUF (%.1f GiB, %s)",
-                        total / 2**30, "pinned host" if not dst.is_cuda else "device")
+            logger.info(
+                "Filled Qwen4Exp PLE table from GGUF (%.1f GiB, %s)",
+                total / 2**30,
+                "pinned host" if not dst.is_cuda else "device",
+            )
 
     return GGUFPLEEmbeddingMethod

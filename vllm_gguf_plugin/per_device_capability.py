@@ -22,7 +22,10 @@ def patch_platform() -> None:
     from vllm.platforms import current_platform
 
     cls = type(current_platform)
-    if getattr(cls, "_gguf_per_device_capability", False) or not current_platform.is_cuda():
+    if (
+        getattr(cls, "_gguf_per_device_capability", False)
+        or not current_platform.is_cuda()
+    ):
         return
 
     def current_device(device_id: int) -> int:
@@ -38,4 +41,3 @@ def patch_platform() -> None:
 
         setattr(cls, name, classmethod(functools.wraps(original)(wrapper)))
     cls._gguf_per_device_capability = True
-
