@@ -31,6 +31,9 @@ from .params import (
 from .utils import MMQ_QUANT_TYPES, MMVQ_QUANT_TYPES, logger
 
 
+_MAX_GRID_Z = 65535
+
+
 def _fused_moe_gguf(
     x: torch.Tensor,
     w1: torch.Tensor,
@@ -94,20 +97,25 @@ def _fused_moe_gguf(
         )
         ops.moe_sum(out, out_hidden_states)
     elif weight_type2 in MMVQ_QUANT_TYPES and weight_type in MMVQ_QUANT_TYPES:
-        num_tokens, _ = x.shape
         E, N, _ = w1.shape
         top_k = topk_ids.shape[1]
+        # the vec kernels launch one grid.z block per (token, expert) pair, and
+        # grid.z is capped at 65535: 8192 tokens x top-10 would not launch
+        chunk = _MAX_GRID_Z // top_k
+        for start in range(0, x.shape[0], chunk):
+            end = min(start + chunk, x.shape[0])
+            num_tokens = end - start
+            ids = topk_ids[start:end]
+            out = ops.ggml_moe_a8_vec(x[start:end], w1, ids, top_k, weight_type, N, num_tokens)
+            out = act(out)
 
-        out = ops.ggml_moe_a8_vec(x, w1, topk_ids, top_k, weight_type, N, num_tokens)
-        out = act(out)
-
-        out = ops.ggml_moe_a8_vec(
-            out, w2, topk_ids, 1, weight_type2, w2.shape[1], num_tokens * top_k
-        )
-        out = out.reshape(num_tokens, top_k, w2.shape[1]).mul_(
-            topk_weights.view(num_tokens, top_k, 1)
-        )
-        ops.moe_sum(out, out_hidden_states)
+            out = ops.ggml_moe_a8_vec(
+                out, w2, ids, 1, weight_type2, w2.shape[1], num_tokens * top_k
+            )
+            out = out.reshape(num_tokens, top_k, w2.shape[1]).mul_(
+                topk_weights[start:end].view(num_tokens, top_k, 1)
+            )
+            ops.moe_sum(out, out_hidden_states[start:end])
     else:
         from . import fused_mul_mat_gguf as fused_mul_mat_gguf_op
 
