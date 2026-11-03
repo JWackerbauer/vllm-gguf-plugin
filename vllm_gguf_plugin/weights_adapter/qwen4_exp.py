@@ -89,6 +89,46 @@ def build_qwen4exp_mapper(is_multimodal: bool) -> WeightsMapper:
     )
 
 
+def _unfuse_qsa_indexer() -> None:
+    """Keep the QSA indexer projection out of ``qkv_proj`` for GGUF checkpoints.
+
+    vLLM fuses q/k/v and the indexer's ``index_qk_proj`` into one linear unless LoRA
+    is active. In a GGUF, q/k/v are quantized and the indexer is BF16, and the GGUF
+    quant method needs one precision per fused layer. vLLM's LoRA layout (indexer as
+    its own linear) is used instead: the model's packing table and the attention's
+    ``fuse_indexer_projection`` follow it. Costs one small extra matmul per
+    full-attention layer.
+    """
+    import copy
+
+    from vllm.models.qwen4_exp.nvidia import model as q4_model
+    from vllm.models.qwen4_exp.nvidia import qsa
+
+    from ..quantization import GGUFConfig
+
+    for cls in (q4_model.Qwen4ExpForCausalLM, q4_model.Qwen4ExpForConditionalGeneration):
+        mapping = dict(cls.packed_modules_mapping)
+        mapping["qkv_proj"] = [m for m in mapping["qkv_proj"] if "indexer" not in m]
+        cls.packed_modules_mapping = mapping
+
+    attn = qsa.Qwen4ExpQSAAttention
+    if getattr(attn, "_gguf_unfused", False):
+        return
+    original_init = attn.__init__
+
+    class _NoLoRA:  # truthy stand-in: the attention only checks "lora_config is None"
+        pass
+
+    def __init__(self, *args, vllm_config, **kwargs):
+        if isinstance(vllm_config.quant_config, GGUFConfig) and vllm_config.lora_config is None:
+            vllm_config = copy.copy(vllm_config)
+            object.__setattr__(vllm_config, "lora_config", _NoLoRA())
+        original_init(self, *args, vllm_config=vllm_config, **kwargs)
+
+    attn.__init__ = __init__
+    attn._gguf_unfused = True
+
+
 def _gguf_field(reader, key: str):
     field = reader.fields.get(key)
     return field.contents() if field is not None else None
@@ -129,6 +169,7 @@ class Qwen4ExpGGUFAdapter(Qwen35GGUFAdapter):
             )
             text_config.update({"num_experts": int(n_experts)})
         patched.architectures = [QWEN4EXP_ARCHITECTURES[patched.model_type]]
+        _unfuse_qsa_indexer()
         return patched
 
     def build_name_map(
