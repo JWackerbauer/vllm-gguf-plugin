@@ -28,6 +28,7 @@ from vllm.model_executor.models.utils import WeightsMapper
 
 from ..gguf_files import GGUFModelFiles
 from ..gguf_reader import get_gguf_reader
+from .. import qwen4exp_pp
 from ..gguf_utils import maybe_patch_hf_config_from_gguf
 from ..quantization import qwen4exp_ple
 from ..weight_utils import get_gguf_tensor_names, split_stacked_experts
@@ -170,6 +171,7 @@ class Qwen4ExpGGUFAdapter(Qwen35GGUFAdapter):
             text_config.update({"num_experts": int(n_experts)})
         patched.architectures = [QWEN4EXP_ARCHITECTURES[patched.model_type]]
         _unfuse_qsa_indexer()
+        qwen4exp_pp.patch_model_state()
         return patched
 
     def build_name_map(

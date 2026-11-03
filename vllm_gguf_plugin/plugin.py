@@ -145,6 +145,12 @@ def _register_omni_diffusion_quantization() -> None:
     register_quantization_override("gguf", lambda **kw: DiffusionGGUFConfig(**kw))
 
 
+def _patch_qwen4exp_pipeline_parallel() -> None:
+    from .qwen4exp_pp import patch_config_check
+
+    patch_config_check()
+
+
 def register() -> None:
     """Register the out-of-tree GGUF integration."""
     register_quantization_config("gguf")(GGUFConfig)
@@ -167,3 +173,4 @@ def register() -> None:
     _patch_proposer_load_model()
     _patch_output_processor()
     _patch_lmcache_connector()
+    _patch_qwen4exp_pipeline_parallel()
