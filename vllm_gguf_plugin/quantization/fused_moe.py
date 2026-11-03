@@ -102,6 +102,12 @@ def _fused_moe_gguf(
         # the vec kernels launch one grid.z block per (token, expert) pair, and
         # grid.z is capped at 65535: 8192 tokens x top-10 would not launch
         chunk = _MAX_GRID_Z // top_k
+        # The vec kernels index the expert weights with topk_ids directly. vLLM
+        # marks unused slots with -1 (padding tokens, e.g. the CUDA graph
+        # warm-up batch), which reads before W: route those to expert 0 and drop
+        # their output. No host sync, so it stays CUDA-graph safe.
+        invalid = topk_ids < 0
+        topk_ids = topk_ids.clamp(min=0)
         for start in range(0, x.shape[0], chunk):
             end = min(start + chunk, x.shape[0])
             num_tokens = end - start
@@ -115,6 +121,7 @@ def _fused_moe_gguf(
             out = out.reshape(num_tokens, top_k, w2.shape[1]).mul_(
                 topk_weights[start:end].view(num_tokens, top_k, 1)
             )
+            out.masked_fill_(invalid[start:end].view(num_tokens, top_k, 1), 0)
             ops.moe_sum(out, out_hidden_states[start:end])
     else:
         from . import fused_mul_mat_gguf as fused_mul_mat_gguf_op
