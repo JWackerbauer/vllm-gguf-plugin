@@ -273,6 +273,29 @@ def _dequantize_rows(weight: torch.Tensor, weight_type: int) -> torch.Tensor:
     return torch.from_numpy(values).to(torch.bfloat16)
 
 
+def _keep_draft_gguf_quant_config() -> None:
+    """Build the MTP layer with the GGUF quant config the loader prepared.
+
+    Qwen4ExpMTP derives a fresh draft quant config for its layer, which drops the
+    loader's per-checkpoint state (unquantized modules such as the BF16 indexer).
+    """
+    from vllm.models.qwen4_exp.nvidia import mtp
+
+    if getattr(mtp, "_gguf_draft_quant_patched", False):
+        return
+    original = mtp.get_draft_quant_config
+
+    def get_draft_quant_config(vllm_config):
+        from ..quantization import GGUFConfig
+
+        if isinstance(vllm_config.quant_config, GGUFConfig):
+            return vllm_config.quant_config
+        return original(vllm_config)
+
+    mtp.get_draft_quant_config = get_draft_quant_config
+    mtp._gguf_draft_quant_patched = True
+
+
 class Qwen4ExpMtpGGUFAdapter(Qwen4ExpGGUFAdapter):
     """MTP draft for Qwen3.8-Flash-Next from a GGUF holding one nextn block.
 
@@ -301,6 +324,7 @@ class Qwen4ExpMtpGGUFAdapter(Qwen4ExpGGUFAdapter):
         if n_experts is not None and n_experts != text_config.num_experts:
             text_config.update({"num_experts": int(n_experts)})
         _unfuse_qsa_indexer()
+        _keep_draft_gguf_quant_config()
         return hf_config
 
     def build_name_map(self, files: GGUFModelFiles, model_config: ModelConfig) -> dict[str, str]:
