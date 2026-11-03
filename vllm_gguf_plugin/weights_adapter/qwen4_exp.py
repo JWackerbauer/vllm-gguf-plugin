@@ -313,6 +313,13 @@ def _keep_draft_gguf_quant_config() -> None:
 
     mtp.get_pp_group = lambda: _DrafterStage(real_get_pp_group())
 
+    # Local argmax (draft over a vocabulary subset, VLLM_GGUF_DRAFT_VOCAB) needs
+    # get_top_tokens, which Qwen4ExpMTP lacks; LocalArgmaxMixin's only needs
+    # logits_processor and lm_head, which it has.
+    from vllm.model_executor.models.interfaces import LocalArgmaxMixin
+
+    if not hasattr(mtp.Qwen4ExpMTP, "get_top_tokens"):
+        mtp.Qwen4ExpMTP.get_top_tokens = LocalArgmaxMixin.get_top_tokens
 
 class Qwen4ExpMtpGGUFAdapter(Qwen4ExpGGUFAdapter):
     """MTP draft for Qwen3.8-Flash-Next from a GGUF holding one nextn block.
