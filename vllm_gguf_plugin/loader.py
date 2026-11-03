@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import gc
 import os
 from typing import TYPE_CHECKING, NamedTuple, cast
 
@@ -255,6 +256,10 @@ class GGUFModelLoader(BaseModelLoader):
                     vllm_config.quant_config,
                     prefix=prefix,
                 )
+                # The replaced dense vocab modules (2.4 GiB each in bf16 for a 248k
+                # vocabulary) sit in reference cycles; free them before the GGUF
+                # weights are materialized, not whenever the collector next runs.
+                gc.collect()
             model.load_weights(
                 self._iter_weights(adapter, plan, model_config),
             )
