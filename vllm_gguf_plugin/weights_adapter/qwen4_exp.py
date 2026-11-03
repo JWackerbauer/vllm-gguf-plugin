@@ -274,10 +274,11 @@ def _dequantize_rows(weight: torch.Tensor, weight_type: int) -> torch.Tensor:
 
 
 def _keep_draft_gguf_quant_config() -> None:
-    """Build the MTP layer with the GGUF quant config the loader prepared.
+    """Patches for the Qwen4Exp MTP drafter with a GGUF and pipeline parallelism.
 
     Qwen4ExpMTP derives a fresh draft quant config for its layer, which drops the
-    loader's per-checkpoint state (unquantized modules such as the BF16 indexer).
+    loader's per-checkpoint state (unquantized modules such as the BF16 indexer):
+    build the layer with the GGUF quant config the loader prepared.
     """
     from vllm.models.qwen4_exp.nvidia import mtp
 
@@ -294,6 +295,23 @@ def _keep_draft_gguf_quant_config() -> None:
 
     mtp.get_draft_quant_config = get_draft_quant_config
     mtp._gguf_draft_quant_patched = True
+
+    # The drafter is one module on the last pipeline stage, but its forward embeds
+    # the tokens only "if get_pp_group().is_first_rank" and otherwise waits for
+    # intermediate tensors that no stage sends. Within the MTP module the drafter
+    # is its own single stage. (is_last_rank, which picks the LM head, stays real.)
+    real_get_pp_group = mtp.get_pp_group
+
+    class _DrafterStage:
+        def __init__(self, group):
+            self._group = group
+
+        is_first_rank = True
+
+        def __getattr__(self, name):
+            return getattr(self._group, name)
+
+    mtp.get_pp_group = lambda: _DrafterStage(real_get_pp_group())
 
 
 class Qwen4ExpMtpGGUFAdapter(Qwen4ExpGGUFAdapter):
