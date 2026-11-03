@@ -1763,6 +1763,32 @@ static __device__ __forceinline__ void get_int_from_table_16(const uint32_t & q4
     val2 = v1 | (v2 << 16);
 }
 
+#define VDR_Q2_0_Q8_1_MMVQ 1  // one 32-value chunk (of the block's two) per call
+
+// iqs selects the chunk of 32 values (0 or 1); bq8_1 is the Q8_1 block for that chunk.
+static __device__ __forceinline__ float vec_dot_q2_0_q8_1(
+    const void * __restrict__ vbq, const block_q8_1 * __restrict__ bq8_1, const int & iqs) {
+    const block_q2_0 * bq2_0 = (const block_q2_0 *) vbq;
+    const float d2 = __half2float(bq2_0->d);
+    const int16_t * qs = (const int16_t *) bq2_0->qs + iqs * 4;
+    const block_q8_1 * bq8 = bq8_1 + iqs;
+    int sumi = 0;
+#pragma unroll
+    for (int j = 0; j < 4; ++j) {
+        const int q = qs[j];
+        const int u = get_int_b4(bq8->qs, j*2 + 0);
+        const int v = get_int_b4(bq8->qs, j*2 + 1);
+        // 2-bit codes -> bytes holding (code - 1): even and odd crumbs, then unshuffle
+        const int qe = __byte_perm(0x020100FF, 0x020100FF, q >> 0);
+        const int qo = __byte_perm(0x020100FF, 0x020100FF, q >> 2);
+        const int qx = __byte_perm(qe, qo, 0x5140);
+        const int qy = __byte_perm(qe, qo, 0x7362);
+        sumi = __dp4a(u, qx, sumi);
+        sumi = __dp4a(v, qy, sumi);
+    }
+    return d2 * __low2float(bq8->ds) * sumi;
+}
+
 static __device__ __forceinline__ float vec_dot_iq4_nl_q8_1(
     const void * __restrict__ vbq, const block_q8_1 * __restrict__ bq8_1, const int & iqs) {
 #if defined __CUDA_ARCH__ && __CUDA_ARCH__ >= 610 || defined USE_ROCM

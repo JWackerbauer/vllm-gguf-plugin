@@ -181,6 +181,17 @@ typedef struct {
     uint8_t qs[QK4_NL/2];
 } block_iq4_nl;
 
+// Q2_0 (llama.cpp GGML_TYPE_Q2_0 = 42): 64 values, one fp16 scale, 2-bit codes c in
+// {0,1,2,3} meaning (c - 1) * d, i.e. {-1, 0, +1, +2} * d.
+#define QK2_0 64
+#define QR2_0 1
+#define QI2_0 (QK2_0 / 32)
+typedef struct {
+    half d;
+    uint8_t qs[QK2_0 / 4];
+} block_q2_0;
+static_assert(sizeof(block_q2_0) == sizeof(half) + QK2_0 / 4, "wrong q2_0 block size/padding");
+
 #define QR4_XS 8
 #define QI4_XS (QK_K / (4*QR4_XS))
 typedef struct {

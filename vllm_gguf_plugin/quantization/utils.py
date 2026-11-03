@@ -5,6 +5,10 @@ from collections.abc import Mapping
 from types import MappingProxyType
 
 from gguf import GGMLQuantizationType as WeightType
+
+from ..gguf_compat import register_extra_quant_types
+
+register_extra_quant_types()
 from vllm.logger import init_logger
 
 logger = init_logger(__name__)
@@ -70,6 +74,9 @@ IMATRIX_QUANT_TYPES = {
     WeightType.IQ4_XS,
     WeightType.IQ4_NL,
 }
-DEQUANT_TYPES = STANDARD_QUANT_TYPES | KQUANT_TYPES | IMATRIX_QUANT_TYPES
-MMVQ_QUANT_TYPES = STANDARD_QUANT_TYPES | KQUANT_TYPES | IMATRIX_QUANT_TYPES
+# Newer llama.cpp types (see gguf_compat): dequantize + MMVQ, no MMQ kernel.
+# Q2_0's MMVQ support covers the MoE vec path only (ggml_moe_a8_vec).
+EXTRA_QUANT_TYPES = {WeightType.Q2_0}
+DEQUANT_TYPES = STANDARD_QUANT_TYPES | KQUANT_TYPES | IMATRIX_QUANT_TYPES | EXTRA_QUANT_TYPES
+MMVQ_QUANT_TYPES = STANDARD_QUANT_TYPES | KQUANT_TYPES | IMATRIX_QUANT_TYPES | EXTRA_QUANT_TYPES
 MMQ_QUANT_TYPES = STANDARD_QUANT_TYPES | KQUANT_TYPES

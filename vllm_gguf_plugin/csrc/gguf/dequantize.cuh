@@ -1,5 +1,15 @@
 // copied and adapted from https://github.com/ggerganov/llama.cpp/blob/b2899/ggml-cuda/convert.cu
 // Dequant functions
+static __device__ __forceinline__ void dequantize_q2_0(const void * vx, const int ib, const int iqs, dfloat2 & v){
+    const block_q2_0 * x = (const block_q2_0 *) vx;
+    const dfloat d = x[ib].d;
+    const int c0 = (x[ib].qs[iqs / 4] >> ((iqs % 4) * 2)) & 0x3;
+    const int c1 = (x[ib].qs[(iqs + 1) / 4] >> (((iqs + 1) % 4) * 2)) & 0x3;
+    v.x = __int2half_rn(c0 - 1);
+    v.y = __int2half_rn(c1 - 1);
+    v = __hmul2(v, {d, d});
+}
+
 static __device__ __forceinline__ void dequantize_q4_0(const void * vx, const int ib, const int iqs, dfloat2 & v){
     const block_q4_0 * x = (const block_q4_0 *) vx;
 
@@ -565,6 +575,8 @@ static to_cuda_ggml_t<dst_t> ggml_get_to_cuda(int64_t type) {
             return dequantize_row_iq4_xs_cuda;
         case 29:
             return dequantize_row_iq1_m_cuda;
+        case 42:
+            return dequantize_block_cuda<QK2_0, QR2_0, dequantize_q2_0>;
         default:
             return nullptr;
     }

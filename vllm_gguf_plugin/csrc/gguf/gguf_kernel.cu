@@ -511,6 +511,12 @@ Tensor ggml_moe_a8_vec(Tensor X,  // input
             (scalar_t*)Y.data_ptr(), (int*)topk_ids.data_ptr(), top_k, tokens,
             col, row, quant_X.stride(0), stream);
         break;
+      case 42:  // Q2_0
+        moe_vec_q2_0_q8_1_cuda<scalar_t>(
+            (void*)W.data_ptr(), (void*)quant_X.data_ptr(),
+            (scalar_t*)Y.data_ptr(), (int*)topk_ids.data_ptr(), top_k, tokens,
+            col, row, quant_X.stride(0), stream);
+        break;
       case 21:
         moe_vec_iq3_s_q8_1_cuda<scalar_t>(
             (void*)W.data_ptr(), (void*)quant_X.data_ptr(),
