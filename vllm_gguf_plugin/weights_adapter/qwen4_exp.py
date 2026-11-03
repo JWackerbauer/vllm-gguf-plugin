@@ -227,3 +227,147 @@ class Qwen4ExpGGUFAdapter(Qwen35GGUFAdapter):
         # the Qwen3.5 rules (norms -1, GDN head order, A_log, conv1d, 1-D gates) then
         # apply to the renamed tensors; split_stacked_experts is done there too
         yield from super().transform_weights(merged(), model_config)
+
+
+QWEN4EXP_MTP_MODEL_TYPES = ("qwen4_exp_mtp",)
+# staging names for tensors the GGUF stores fused; split in transform_weights
+_MTP_EH_STAGE = "mtp.fc_eh."
+_DOWN_INJECT_STAGE = "hyper_connection.down_inject."
+# vLLM builds the hyper-connection linears unquantized (BF16)
+_HC_BF16_PARAMS = (
+    "input_mix_weight_down.weight",
+    "input_mix_weight_up.weight",
+    "block_inject_weight.weight",
+)
+
+
+def build_qwen4exp_mtp_mapper(block_index: int) -> WeightsMapper:
+    block = f"blk.{block_index}."
+    return WeightsMapper(
+        orig_to_new_prefix={
+            f"{block}nextn.eh_proj.": _MTP_EH_STAGE,
+            f"{block}nextn.enorm.": "mtp.pre_fc_norm_embedding.",
+            f"{block}nextn.hnorm.": "mtp.pre_fc_norm_hidden.",
+            f"{block}nextn.hc_head_down.": "mtp.hyper_connection_mixer.input_mix_weight_down.",
+            f"{block}nextn.hc_head_up.": "mtp.hyper_connection_mixer.input_mix_weight_up.",
+            f"{block}nextn.hc_head_norm.": "mtp.hyper_connection_mixer.hc_norm.",
+            block: "mtp.layers.0.",
+            "token_embd.": "embed_tokens.",
+            "output.": "lm_head.",
+        },
+        orig_to_new_substr={
+            # newer converters store the HC down projection and injection fused
+            "hc_attn_down_inject.": "attn_" + _DOWN_INJECT_STAGE,
+            "hc_ffn_down_inject.": "mlp_" + _DOWN_INJECT_STAGE,
+        }
+        | QWEN4EXP_SUBSTR
+        | qwen35_layer_substr(is_moe=True),
+    )
+
+
+def _dequantize_rows(weight: torch.Tensor, weight_type: int) -> torch.Tensor:
+    """Dequantize raw GGUF rows ([rows, bytes] uint8) to BF16 on the CPU."""
+    import gguf
+
+    values = gguf.quants.dequantize(weight.numpy(), gguf.GGMLQuantizationType(weight_type))
+    return torch.from_numpy(values).to(torch.bfloat16)
+
+
+class Qwen4ExpMtpGGUFAdapter(Qwen4ExpGGUFAdapter):
+    """MTP draft for Qwen3.8-Flash-Next from a GGUF holding one nextn block.
+
+    Made for the base model's MTP head exported on its own (llama.cpp ``qwen4exp``
+    with ``nextn_predict_layers`` 1, e.g. Qwen3.8-Flash-Next-Q4_K_M.gguf: the block,
+    token_embd and output). With pipeline parallelism vLLM does not share the
+    target's embedding with a drafter on the last stage, so the head's own
+    embedding and LM head are loaded. Verified against the HF checkpoint
+    (tools/qwen4exp_mtp_verify.py): eh_proj = [fc_embedding | fc_hidden] along the
+    input dim, hc_*_down_inject = [down (hc_lowrank rows); inject (hc_count rows)],
+    all norms stored +1.
+    """
+
+    @classmethod
+    def matches(cls, config) -> bool:
+        return config.model_type in QWEN4EXP_MTP_MODEL_TYPES
+
+    @classmethod
+    def architecture(cls, config) -> str | None:
+        return "Qwen4ExpMTP"
+
+    def patch_hf_config(self, files: GGUFModelFiles, hf_config: PretrainedConfig) -> PretrainedConfig:
+        reader = get_gguf_reader(files.primary_backbone)
+        text_config = hf_config.get_text_config()
+        n_experts = _gguf_field(reader, f"{GGUF_ARCH}.expert_count")
+        if n_experts is not None and n_experts != text_config.num_experts:
+            text_config.update({"num_experts": int(n_experts)})
+        _unfuse_qsa_indexer()
+        return hf_config
+
+    def build_name_map(self, files: GGUFModelFiles, model_config: ModelConfig) -> dict[str, str]:
+        reader = get_gguf_reader(files.primary_backbone)
+        block_index = int(_gguf_field(reader, f"{GGUF_ARCH}.block_count")) - 1
+        if not any(f"blk.{block_index}.nextn." in n for n in get_gguf_tensor_names(files.all_files)):
+            raise RuntimeError(f"No nextn block {block_index} in {files.primary_backbone}")
+        mapper = build_qwen4exp_mtp_mapper(block_index)
+        name_map, unmapped = {}, []
+        for name in sorted(get_gguf_tensor_names(files.all_files)):
+            mapped = _map_tensor_name(mapper, name)
+            if mapped is None:
+                unmapped.append(name)
+            else:
+                name_map[name] = mapped
+        if unmapped:
+            logger.warning("No HF name for %d Qwen4Exp MTP tensor(s), skipping: %s",
+                           len(unmapped), unmapped)
+        # vLLM numbers the draft layer after the trunk (module prefix
+        # ...layers.<num_hidden_layers>), while its weights load as layers.0; the
+        # quant config matches unquantized modules by substring of the prefix. The
+        # only BF16 linear in the block is the QSA indexer projection.
+        n = model_config.hf_config.get_text_config().num_hidden_layers
+        self.extra_unquantized_modules = (f"layers.{n}.self_attn.indexer.index_qk_proj",)
+        logger.info("Loading Qwen4Exp MTP draft from GGUF block %d", block_index)
+        return name_map
+
+    def transform_weights(self, weights: Iterable[GGUFWeight], model_config: ModelConfig) -> Iterable[GGUFWeight]:
+        text_config = model_config.hf_config.get_text_config()
+        lowrank = int(text_config.hc_lowrank)
+
+        def mtp_parts() -> Iterable[GGUFWeight]:
+            types: dict[str, int] = {}
+            for name, weight in weights:
+                if name.endswith(".weight_type"):
+                    # the iterator names it name.replace("weight", "weight_type"), which
+                    # also hits names like input_mix_weight_up.weight
+                    types[name.replace("weight_type", "weight")] = int(weight)
+                    if name.startswith(_MTP_EH_STAGE):
+                        for part in ("fc_embedding", "fc_hidden"):
+                            yield name.replace(_MTP_EH_STAGE, f"mtp.{part}."), weight
+                    continue  # re-emitted (or dropped, for BF16 targets) below
+                qtype = types.get(name)
+                if name.startswith(_MTP_EH_STAGE):
+                    # [out, in_embedding + in_hidden]; for quantized rows the split
+                    # point (2560 values) falls on a block boundary
+                    half = weight.shape[1] // 2
+                    if qtype is not None:
+                        import gguf
+
+                        block, _ = gguf.GGML_QUANT_SIZES[gguf.GGMLQuantizationType(qtype)]
+                        assert text_config.hidden_size % block == 0
+                    for part, chunk in (("fc_embedding", weight[:, :half]), ("fc_hidden", weight[:, half:])):
+                        yield name.replace(_MTP_EH_STAGE, f"mtp.{part}."), chunk.contiguous()
+                    continue
+                if qtype is not None and name.endswith(_HC_BF16_PARAMS + (_DOWN_INJECT_STAGE + "weight",)):
+                    weight, qtype = _dequantize_rows(weight, qtype), None
+                if _DOWN_INJECT_STAGE in name:
+                    assert qtype is None
+                    base = name.removesuffix(_DOWN_INJECT_STAGE + "weight")
+                    yield base + "hyper_connection.input_mix_weight_down.weight", weight[:lowrank].contiguous()
+                    yield base + "hyper_connection.block_inject_weight.weight", weight[lowrank:].contiguous()
+                    continue
+                if qtype is not None:
+                    yield name.replace("weight", "weight_type"), torch.tensor(qtype)
+                if name.startswith("mtp.pre_fc_norm_"):
+                    weight = weight - 1
+                yield name, weight
+
+        yield from super().transform_weights(mtp_parts(), model_config)

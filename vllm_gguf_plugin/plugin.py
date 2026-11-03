@@ -85,6 +85,12 @@ def _patch_engine_args() -> None:
 
     @wraps(original_create_speculative_config)
     def create_speculative_config(self, *args, **kwargs):
+        # Plugin-only key: the MTP head in its own GGUF (e.g. a base model's head for
+        # a pruned or fine-tuned trunk); the HF config still comes from the target.
+        draft_weights = None
+        if self.speculative_config is not None and "gguf_draft_weights" in self.speculative_config:
+            self.speculative_config = dict(self.speculative_config)
+            draft_weights = self.speculative_config.pop("gguf_draft_weights")
         configured_model = getattr(self, "spec_model", None)
         if self.speculative_config is not None:
             configured_model = configured_model or self.speculative_config.get("model")
@@ -112,7 +118,7 @@ def _patch_engine_args() -> None:
             and configured_model is None
             and _is_gguf_reference(gguf_model)
         ):
-            config.draft_model_config.model_weights = gguf_model
+            config.draft_model_config.model_weights = draft_weights or gguf_model
         return config
 
     EngineArgs.create_speculative_config = create_speculative_config
