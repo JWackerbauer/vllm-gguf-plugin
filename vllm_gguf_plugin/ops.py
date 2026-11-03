@@ -51,6 +51,9 @@ except ImportError:
 # Effective CUDA usage: only when enabled AND available.
 _CUDA_ENABLED = _USE_CUDA and _CUDA_AVAILABLE
 
+_GGML_TYPE_Q2_0 = 42
+_CUDA_Q2_0_OPS = frozenset({"ggml_dequantize", "ggml_moe_a8_vec"})
+
 _CUDA_GEMV_QUANT_TYPES = frozenset(
     {
         GGML_TYPE_Q4_0,
@@ -98,6 +101,9 @@ def _cuda_kernel_available(op_name: str, quant_type: int | None = None) -> bool:
         return False
     if quant_type is None:
         return True
+    if int(quant_type) == _GGML_TYPE_Q2_0:
+        # Q2_0 kernels exist only for dequantize and the MoE vec path (csrc/gguf)
+        return op_name in _CUDA_Q2_0_OPS
     return int(quant_type) in _CUDA_GEMV_QUANT_TYPES
 
 
