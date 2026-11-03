@@ -151,6 +151,12 @@ def _patch_qwen4exp_pipeline_parallel() -> None:
     patch_config_check()
 
 
+def _patch_per_device_capability() -> None:
+    from .per_device_capability import patch_platform
+
+    patch_platform()
+
+
 def register() -> None:
     """Register the out-of-tree GGUF integration."""
     register_quantization_config("gguf")(GGUFConfig)
@@ -174,3 +180,4 @@ def register() -> None:
     _patch_output_processor()
     _patch_lmcache_connector()
     _patch_qwen4exp_pipeline_parallel()
+    _patch_per_device_capability()
