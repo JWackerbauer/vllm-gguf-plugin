@@ -97,7 +97,10 @@ def _patch_lmcache_connector() -> None:
         cls = loader()
         import sys
 
+        from .lmcache_heartbeat import patch_worker_adapter
+
         _patch_module(sys.modules[cls.__module__])
+        patch_worker_adapter()
         return cls
 
     patched_loader._gguf_lmcache_identity = True
